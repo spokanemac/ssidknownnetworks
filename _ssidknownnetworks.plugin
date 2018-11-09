@@ -1,0 +1,12 @@
+#!/bin/bash
+# Plugin:       SSID KnownNetworks
+# Description:  Watchman Monitoring custom plugin to report Known (Preferred) Network SSID
+# Author:       Jack-Daniyel Strong <jack@jdstrong.com>
+# Date:         Oct 06, 2018
+# Version:      0.1
+# ==============================================================================
+
+
+defaults read /Library/Preferences/SystemConfiguration/com.apple.airport.preferences KnownNetworks | grep -E "(SSIDString|SecurityType)" | cut -d= -f2 | sed -e 'N;s/\n/ /' -e 's|;||g' | sed -e 's|^ ||' | sed 's|"||g';
+
+exit 0
