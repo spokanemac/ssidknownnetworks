@@ -3,10 +3,53 @@
 # Description:  Watchman Monitoring custom plugin to report Known (Preferred) Network SSID
 # Author:       Jack-Daniyel Strong <jack@jdstrong.com>
 # Date:         Oct 06, 2018
-# Version:      0.1
+# Revised:      Dec 02, 2024
+# Version:      0.2
 # ==============================================================================
 
+# Paths to utilities
+networksetup='/usr/sbin/networksetup'
+plistbuddy='/usr/libexec/PlistBuddy'
 
-defaults read /Library/Preferences/SystemConfiguration/com.apple.airport.preferences KnownNetworks | grep -E "(SSIDString|SecurityType)" | cut -d= -f2 | sed -e 'N;s/\n/ /' -e 's|;||g' | sed -e 's|^ ||' | sed 's|"||g';
+# Step 1: Find the current Wi-Fi hardware port
+wifi_port=$($networksetup -listallhardwareports | awk '/Wi-Fi|AirPort/{getline; print $NF}')
+if [[ -z "$wifi_port" ]]; then
+    echo "Wi-Fi hardware port not found."
+    exit 1
+fi
+
+# Step 2: Build a list of preferred networks
+preferred_networks=$($networksetup -listpreferredwirelessnetworks "$wifi_port" | tail -n +2 | sed 's/^\t//' | sort)
+if [[ -z "$preferred_networks" ]]; then
+    echo "No preferred networks found on $wifi_port."
+    exit 1
+fi
+
+# Step 3: Loop through preferred networks and retrieve details
+output="SSID, SecurityType, Hidden\n"
+while IFS= read -r ssid; do
+    # Trim leading whitespace
+    ssid=$(echo "$ssid" | sed 's/^[ \t]*//')
+
+    # Escape SSID for PlistBuddy (handles spaces and special characters)
+    escaped_ssid=$(echo "$ssid" | sed 's/"/\\"/g')
+
+    # Retrieve Security Type
+    security_type=$($plistbuddy -c "print :wifi.network.ssid.'$escaped_ssid':SupportedSecurityTypes" /Library/Preferences/com.apple.wifi.known-networks.plist 2>/dev/null || echo "N/A")
+
+    # Retrieve Hidden Status
+    hidden=$($plistbuddy -c "print :wifi.network.ssid.'$escaped_ssid':Hidden" /Library/Preferences/com.apple.wifi.known-networks.plist 2>/dev/null || echo "N/A")
+
+    # Append to output
+    if [[ "$hidden" == "true" ]]; then
+        output+="$ssid, $security_type, Hidden\n"
+    else
+        output+="$ssid, $security_type\n"
+    fi
+done <<< "$preferred_networks"
+
+
+# Step 4: Display final output table
+echo -e "$output"
 
 exit 0
