@@ -7,7 +7,7 @@
 	<key>PluginUUID</key>
 	<string>817b8786-a5a4-4874-8446-5ff95ff1fa1e</string>
 	<key>PluginVersion</key>
-	<string>0.2</string>
+	<string>0.3</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/Library/MonitoringClient/Plugins/_ssidknownnetworks.plugin</string>
