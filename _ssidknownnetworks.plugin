@@ -1,55 +1,155 @@
-#!/bin/bash
+#!/usr/bin/env python3
 # Plugin:       SSID KnownNetworks
 # Description:  Watchman Monitoring custom plugin to report Known (Preferred) Network SSID
 # Author:       Jack-Daniyel Strong <jack@jdstrong.com>
 # Date:         Oct 06, 2018
-# Revised:      Dec 02, 2024
-# Version:      0.2
+# Revised:      Dec 03, 2024 Rewritten in Python3
+# Version:      0.3
 # ==============================================================================
 
-# Paths to utilities
-networksetup='/usr/sbin/networksetup'
-plistbuddy='/usr/libexec/PlistBuddy'
+import os
+import sys
+import subprocess
 
-# Step 1: Find the current Wi-Fi hardware port
-wifi_port=$($networksetup -listallhardwareports | awk '/Wi-Fi|AirPort/{getline; print $NF}')
-if [[ -z "$wifi_port" ]]; then
-    echo "Wi-Fi hardware port not found."
-    exit 1
-fi
+# Utility paths
+NETWORKSETUP = "/usr/sbin/networksetup"
+PLISTBUDDY = "/usr/libexec/PlistBuddy"
+KNOWN_NETWORKS_PLIST = "/Library/Preferences/com.apple.wifi.known-networks.plist"
 
-# Step 2: Build a list of preferred networks
-preferred_networks=$($networksetup -listpreferredwirelessnetworks "$wifi_port" | tail -n +2 | sed 's/^\t//' | sort)
-if [[ -z "$preferred_networks" ]]; then
-    echo "No preferred networks found on $wifi_port."
-    exit 1
-fi
+def get_wifi_port():
+    """
+    Retrieve the current Wi-Fi hardware port.
+    """
+    try:
+        result = subprocess.check_output(
+            [NETWORKSETUP, "-listallhardwareports"], universal_newlines=True
+        )
+        lines = iter(result.splitlines())  # Convert the list to an iterator
+        for line in lines:
+            if "Wi-Fi" in line or "AirPort" in line:
+                return next(lines).split()[-1]
+        return None
+    except subprocess.CalledProcessError:
+        return None
 
-# Step 3: Loop through preferred networks and retrieve details
-output="SSID, SecurityType, Hidden\n"
-while IFS= read -r ssid; do
-    # Trim leading whitespace
-    ssid=$(echo "$ssid" | sed 's/^[ \t]*//')
+def get_preferred_networks(wifi_port):
+    """
+    Retrieve the list of preferred networks for the specified Wi-Fi hardware port.
+    """
+    try:
+        result = subprocess.check_output(
+            [NETWORKSETUP, "-listpreferredwirelessnetworks", wifi_port],
+            universal_newlines=True,
+        )
+        networks = result.splitlines()[1:]  # Skip the first line
+        return [network.strip() for network in networks]
+    except subprocess.CalledProcessError:
+        return []
 
-    # Escape SSID for PlistBuddy (handles spaces and special characters)
-    escaped_ssid=$(echo "$ssid" | sed 's/"/\\"/g')
+def get_network_details(ssid):
+    """
+    Retrieve the security type and hidden status of a given SSID using PlistBuddy.
+    """
+    try:
+        escaped_ssid = ssid.replace('"', '\\"')
+        security_type = subprocess.check_output(
+            [PLISTBUDDY, "-c", f"print :wifi.network.ssid.'{escaped_ssid}':SupportedSecurityTypes", KNOWN_NETWORKS_PLIST],
+            universal_newlines=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.CalledProcessError:
+        security_type = "N/A"
 
-    # Retrieve Security Type
-    security_type=$($plistbuddy -c "print :wifi.network.ssid.'$escaped_ssid':SupportedSecurityTypes" /Library/Preferences/com.apple.wifi.known-networks.plist 2>/dev/null || echo "N/A")
+    try:
+        hidden = subprocess.check_output(
+            [PLISTBUDDY, "-c", f"print :wifi.network.ssid.'{escaped_ssid}':Hidden", KNOWN_NETWORKS_PLIST],
+            universal_newlines=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.CalledProcessError:
+        hidden = "N/A"
 
-    # Retrieve Hidden Status
-    hidden=$($plistbuddy -c "print :wifi.network.ssid.'$escaped_ssid':Hidden" /Library/Preferences/com.apple.wifi.known-networks.plist 2>/dev/null || echo "N/A")
+    return security_type, hidden
 
-    # Append to output
-    if [[ "$hidden" == "true" ]]; then
-        output+="$ssid, $security_type, Hidden\n"
-    else
-        output+="$ssid, $security_type\n"
-    fi
-done <<< "$preferred_networks"
+def generate_csv_output(network_details):
+    """
+    Generate a CSV-formatted output from the network details.
+    """
+    output = "SSID, SecurityType, Hidden\n"
+    for ssid, security_type, hidden_status in network_details:
+        output += f"{ssid}, {security_type}, {hidden_status}\n"
+    return output
 
+def generate_html_output(network_details):
+    """
+    Generate an HTML-formatted output from the network details.
+    """
+    output = "<table border='1'>\n"
+    output += "  <tr><th>SSID</th><th>SecurityType</th><th>Hidden</th></tr>\n"
+    for ssid, security_type, hidden_status in network_details:
+        output += f"  <tr><td>{ssid}</td><td>{security_type}</td><td>{hidden_status}</td></tr>\n"
+    output += "</table>"
+    return output
 
-# Step 4: Display final output table
-echo -e "$output"
+def generate_plain_text_output(network_details):
+    """
+    Generate a plain-text formatted output from the network details.
+    """
+    output = "SSID: Security (Visibility)\n"
+    for ssid, security_type, hidden_status in network_details:
+        # Label Open networks explicitly
+        if security_type.lower() in ["none", "open", ""]:
+            security_label = "Insecure"
+        else:
+            security_label = f"{security_type}"
 
-exit 0
+        # Add Hidden flag in parentheses if applicable
+        if hidden_status == "Hidden":
+            hidden_label = " (Hidden)"
+        else:
+            hidden_label = ""
+
+        output += f"{ssid}: {security_label} {hidden_label}\n"
+    return output
+
+def main():
+    # Check for the --html flag in the command-line arguments
+    use_html = "--html" in sys.argv
+    use_csv = "--csv" in sys.argv
+
+    # Step 1: Find the current Wi-Fi hardware port
+    wifi_port = get_wifi_port()
+    if not wifi_port:
+        print("Wi-Fi hardware port not found.")
+        exit(1)
+
+    # Step 2: Get the list of preferred networks
+    preferred_networks = get_preferred_networks(wifi_port)
+    if not preferred_networks:
+        print(f"No preferred networks found on {wifi_port}.")
+        exit(1)
+
+    # Step 3: Collect details for each SSID
+    network_details = []
+    for ssid in preferred_networks:
+        security_type, hidden = get_network_details(ssid)
+        hidden_status = "(Hidden)" if hidden == "true" else ""
+        network_details.append((ssid, security_type, hidden_status))
+
+    # Step 4: Sort the network details by SSID
+    network_details = sorted(network_details, key=lambda x: x[0].lower())
+
+    # Step 5: Generate the output in the requested format
+    if use_html:
+        output = generate_html_output(network_details)
+    elif use_csv:
+        output = generate_csv_output(network_details)
+    else:
+        output = generate_plain_text_output(network_details)
+
+    # Print the final output
+    print(output)
+    exit(0)
+
+if __name__ == "__main__":
+    main()
